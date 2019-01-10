@@ -1,0 +1,11 @@
+---
+- hosts: local
+  vars:
+    kong_db: postgres
+    kong_pg_host: "127.0.0.1"
+    kong_pg_port: 5432
+    kong_pg_user: kong
+    kong_pg_password: 123123
+    kong_pg_database: kong
+  roles:
+    - kong
