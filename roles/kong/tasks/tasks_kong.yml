@@ -1,0 +1,205 @@
+---
+  - debug: msg="ansible_os_family={{ ansible_os_family }} ansible_distribution={{ ansible_distribution }}"
+  - block:
+
+      - name: Kong | Check if package is installed
+        command: dpkg-query -W kong
+        register: kong_check_deb
+        become: yes
+        failed_when: kong_check_deb.rc > 1
+        changed_when: kong_check_deb.rc == 1
+        tags:
+          -kong
+
+      - name: Kong | download package
+        get_url:
+          url="{{ kong_dist_url_debian }}"
+          dest="/tmp/kong.deb"
+        retries: 3
+        register: result
+        until: result is not failed
+        when: kong_check_deb.rc == 1
+        tags:
+          -kong
+
+      - name: Kong | install package
+        apt: deb="/tmp/kong.deb"
+        become: true
+        when: kong_check_deb.rc == 1
+        tags:
+          -kong
+
+    when: ansible_os_family == "Debian"
+
+  - block:
+
+      - name: Kong | Check if package is installed
+        command: rpm -q kong
+        register: kong_check_rpm
+        become: yes
+        failed_when: kong_check_rpm.rc > 1
+        changed_when: kong_check_rpm.rc == 1
+        tags:
+          -kong
+          -skip_ansible_lint
+
+      - name: Kong | download package
+        get_url:
+          url="{{ kong_dist_url_centos }}"
+          dest="/tmp/kong.rpm"
+        when: kong_check_rpm.rc == 1
+        tags:
+          -kong
+
+
+      - name: Kong | install package
+        yum:
+          name: /tmp/kong.rpm
+          state: present
+        become: true
+        when: kong_check_rpm.rc == 1
+        tags:
+          -kong
+
+    when: ansible_os_family == "RedHat" and ansible_distribution == "CentOS"
+
+  - block:
+
+      - name: Kong | Check if package is installed
+        command: rpm -q kong
+        register: kong_check_rpm
+        become: yes
+        failed_when: kong_check_rpm.rc > 1
+        changed_when: kong_check_rpm.rc == 1
+        tags:
+          -kong
+          -skip_ansible_lint
+
+      - name: Kong | download package
+        get_url:
+          url="{{ kong_dist_url_rhel7 }}"
+          dest="/tmp/kong.rpm"
+        when: kong_check_rpm.rc == 1
+        tags:
+          -kong
+
+      - name: Kong | install package (yum)
+        yum:
+          name: /tmp/kong.rpm
+          state: present
+        become: true
+        when: kong_check_rpm.rc == 1 and ansible_distribution_major_version < 26
+        tags:
+          -kong
+
+      - name: Kong | install package (dnf)
+        dnf:
+          name: /tmp/kong.rpm
+          state: present
+        become: true
+        when: kong_check_rpm.rc == 1 and ansible_distribution_major_version > 25
+        tags:
+          -kong
+
+    when: ansible_os_family == "RedHat" and ansible_distribution != "CentOS"
+
+  - name: Ensure log directory owned by nginx user
+    file:
+      path: /usr/local/kong/logs
+      state: directory
+      owner: www-data
+      group: www-data
+    ignore_errors: true
+    become: yes
+    when: docker_test is not defined
+    tags:
+      -kong
+
+
+  - name: Kong | init.d upstart
+    template:
+      dest: /etc/init.d/kong
+      mode: 0751
+      src: "{{ role_dir }}/templates/startup/initd.j2"
+    when: ansible_service_mgr == 'upstart'
+    become: yes
+    tags:
+      -kong
+
+
+  - name: Kong | systemd upstart
+    template:
+      dest: /etc/systemd/system/kong.service
+      mode: 0755
+      src: "{{ role_dir }}/templates/startup/systemd.j2"
+    when: ansible_service_mgr == 'systemd'
+    become: yes
+    tags:
+      -kong
+
+  - name: Kong | default nginx config
+    template:
+      src: "{{ role_dir }}/templates/kong/default_nginx.template.j2"
+      dest: /etc/kong/default_nginx.template
+      group: root
+      mode: 0644
+      owner: root
+    become: yes
+    notify:
+      - restart kong
+
+  - name: Kong | initialize kong config
+    copy:
+      src: "/etc/kong/kong.conf.default"
+      dest: /etc/kong/kong.conf
+      remote_src: yes
+      force: no
+      group: root
+      mode: 0644
+      owner: root
+    become: yes
+    notify:
+      - restart kong
+
+
+  - name: Kong | Patch default settings /etc/kong/kong.conf
+    lineinfile:
+      dest: /etc/kong/kong.conf
+      regexp: "{{ item.regexp }}"
+      line: "{{ item.line }}"
+      insertafter: "{{ item.insertafter | default('EOF') }}"
+    with_items: "{{ kong_default_properties | default([]) }}"
+    notify: restart kong
+    become: yes
+    tags:
+     - kong
+
+  - name: Kong | Patch settings /etc/kong/kong.conf
+    lineinfile:
+      dest: /etc/kong/kong.conf
+      regexp: "{{ item.regexp }}"
+      line: "{{ item.line }}"
+      insertafter: "{{ item.insertafter | default('EOF') }}"
+    with_items: "{{ kong_properties | default([]) }}"
+    notify: restart kong
+    become: yes
+    tags:
+     - kong
+
+  - name: Kong | Apply migrations
+    command: kong migrations up
+    notify: restart kong
+    become: yes
+    when: docker_test is not defined
+    tags:
+     - kong
+
+  - name: Kong | Ensure Kong is running
+    service:
+      name: kong
+      state: started
+      enabled: yes
+    become: yes
+    when: docker_test is not defined
+    notify:
+      - restart kong
